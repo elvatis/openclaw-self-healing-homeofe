@@ -1,4 +1,4 @@
-# openclaw-self-healing
+# openclaw-self-healing-homeofe
 
 OpenClaw plugin that improves resilience by automatically fixing reversible failures.
 
@@ -23,10 +23,18 @@ Not implemented yet (next):
 - Plugin install error rollback (disable plugin) based on structured plugin status
   - Waiting for `openclaw plugins list --json` or an equivalent stable API
 
-## Install (dev)
+## Install
+
+From ClawHub:
 
 ```bash
-openclaw plugins install -l ~/.openclaw/workspace/openclaw-self-healing
+clawhub install openclaw-self-healing-homeofe
+```
+
+For local development:
+
+```bash
+openclaw plugins install -l ~/.openclaw/workspace/openclaw-self-healing-homeofe
 openclaw gateway restart
 ```
 

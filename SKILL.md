@@ -1,9 +1,9 @@
 ---
-name: openclaw-self-healing
+name: openclaw-self-healing-homeofe
 description: OpenClaw plugin that applies guardrails and auto-fixes reversible failures (rate limits, disconnects, stuck session pins).
 ---
 
-# openclaw-self-healing
+# openclaw-self-healing-homeofe
 
 Self-healing extension for OpenClaw.
 
