@@ -11,6 +11,7 @@ function expandHome(p: string): string {
 
 type State = {
   limited: Record<string, { lastHitAt: number; nextAvailableAt: number; reason?: string }>;
+  pendingBackups?: Record<string, { createdAt: number; reason: string }>; // filePath -> meta
   whatsapp?: {
     lastSeenConnectedAt?: number;
     lastRestartAt?: number;
@@ -34,6 +35,7 @@ function loadState(p: string): State {
     const raw = fs.readFileSync(p, "utf-8");
     const d = JSON.parse(raw);
     if (!d.limited) d.limited = {};
+    if (!d.pendingBackups) d.pendingBackups = {};
     if (!d.whatsapp) d.whatsapp = {};
     if (!d.cron) d.cron = {};
     if (!d.cron.failCounts) d.cron.failCounts = {};
@@ -42,7 +44,7 @@ function loadState(p: string): State {
     if (!d.plugins.lastDisableAt) d.plugins.lastDisableAt = {};
     return d;
   } catch {
-    return { limited: {}, whatsapp: {}, cron: { failCounts: {}, lastIssueCreatedAt: {} }, plugins: { lastDisableAt: {} } };
+    return { limited: {}, pendingBackups: {}, whatsapp: {}, cron: { failCounts: {}, lastIssueCreatedAt: {} }, plugins: { lastDisableAt: {} } };
   }
 }
 
@@ -149,6 +151,9 @@ export default function register(api: any) {
 
   api.logger?.info?.(`[self-heal] enabled. order=${modelOrder.join(" -> ")}`);
 
+  // If the gateway booted and config is valid, remove any pending backups from previous runs.
+  cleanupPendingBackups("startup").catch(() => undefined);
+
   function isConfigValid(): { ok: boolean; error?: string } {
     try {
       const raw = fs.readFileSync(configFile, "utf-8");
@@ -159,16 +164,63 @@ export default function register(api: any) {
     }
   }
 
-  function backupConfig(reason: string) {
+  function backupConfig(reason: string): string | undefined {
     try {
       fs.mkdirSync(configBackupsDir, { recursive: true });
       const ts = new Date().toISOString().replace(/[:.]/g, "-");
       const out = path.join(configBackupsDir, `openclaw.json.${ts}.bak`);
       fs.copyFileSync(configFile, out);
-      api.logger?.info?.(`[self-heal] backed up openclaw.json (${reason}) -> ${out}`);
+
+      // Mark as pending so we can delete it after we have evidence the gateway still boots.
+      const st = loadState(stateFile);
+      st.pendingBackups = st.pendingBackups || {};
+      st.pendingBackups[out] = { createdAt: nowSec(), reason };
+      saveState(stateFile, st);
+
+      api.logger?.info?.(`[self-heal] backed up openclaw.json (${reason}) -> ${out} (pending cleanup)`);
+      return out;
     } catch (e: any) {
       api.logger?.warn?.(`[self-heal] failed to backup openclaw.json: ${e?.message ?? String(e)}`);
+      return undefined;
     }
+  }
+
+  async function cleanupPendingBackups(where: string) {
+    const v = isConfigValid();
+    if (!v.ok) {
+      api.logger?.warn?.(`[self-heal] not cleaning backups (${where}): openclaw.json invalid: ${v.error}`);
+      return;
+    }
+
+    // Best-effort: ensure gateway responds to a status call.
+    const gw = await runCmd(api, "openclaw gateway status", 15000);
+    if (!gw.ok) {
+      api.logger?.warn?.(`[self-heal] not cleaning backups (${where}): gateway status check failed`);
+      return;
+    }
+
+    const st = loadState(stateFile);
+    const pending = st.pendingBackups || {};
+    const paths = Object.keys(pending);
+    if (paths.length === 0) return;
+
+    let deleted = 0;
+    for (const p of paths) {
+      try {
+        if (fs.existsSync(p)) {
+          fs.unlinkSync(p);
+          deleted++;
+        }
+      } catch {
+        // keep it in pending if we couldn't delete
+        continue;
+      }
+      delete pending[p];
+    }
+
+    st.pendingBackups = pending;
+    saveState(stateFile, st);
+    api.logger?.info?.(`[self-heal] cleaned ${deleted} pending openclaw.json backups (${where})`);
   }
 
   // Heal after an LLM failure.
@@ -266,6 +318,8 @@ export default function register(api: any) {
                 } else {
                   backupConfig("pre-gateway-restart");
                   await runCmd(api, "openclaw gateway restart", 60000);
+                  // If we are still alive after restart, attempt cleanup.
+                  await cleanupPendingBackups("post-gateway-restart");
                   state.whatsapp!.lastRestartAt = nowSec();
                   state.whatsapp!.disconnectStreak = 0;
                 }
@@ -300,6 +354,7 @@ export default function register(api: any) {
                   api.logger?.warn?.(`[self-heal] Disabling failing cron ${name} (${id}).`);
                   backupConfig("pre-cron-disable");
                   await runCmd(api, `openclaw cron edit ${id} --disable`, 15000);
+                  await cleanupPendingBackups("post-cron-disable");
                 }
 
                 // Create issue, but rate limit issue creation
@@ -320,7 +375,7 @@ export default function register(api: any) {
                   // Issue goes to this repo by default
                   await runCmd(
                     api,
-                    `gh issue create -R homeofe/openclaw-self-healing --title "Cron disabled: ${name}" --body ${JSON.stringify(body)} --label security`,
+                    `gh issue create -R homeofe/openclaw-self-healing-homeofe --title "Cron disabled: ${name}" --body ${JSON.stringify(body)} --label security`,
                     20000
                   );
                   state.cron!.lastIssueCreatedAt![id] = nowSec();
