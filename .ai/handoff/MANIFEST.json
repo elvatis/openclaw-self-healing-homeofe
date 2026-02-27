@@ -1,10 +1,16 @@
 {
   "files": {
     "NEXT_ACTIONS.md": {
-      "checksum": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
-      "lines": 10,
-      "updated": "2026-02-28T00:00:00Z",
-      "summary": "1 ready task: define v0.2 roadmap items as GitHub issues."
+      "checksum": "sha256:pending",
+      "lines": 22,
+      "updated": "2026-02-27T23:00:00Z",
+      "summary": "8 roadmap items defined: 3 high, 3 medium, 2 low priority. GitHub issue creation pending gh auth."
+    },
+    "ROADMAP.md": {
+      "checksum": "sha256:pending",
+      "lines": 85,
+      "updated": "2026-02-27T23:00:00Z",
+      "summary": "Full v0.3 roadmap with 8 items, scoped and prioritized."
     }
   },
   "tasks": {
@@ -12,11 +18,41 @@
       "created": "2026-02-28T00:00:00Z",
       "priority": "high",
       "title": "Define v0.2 roadmap items as GitHub issues and prioritize",
+      "status": "done",
+      "depends_on": [],
+      "resolution": "Roadmap defined in ROADMAP.md with 8 items. GitHub issue creation script at scripts/create-roadmap-issues.sh - requires gh auth login to execute."
+    },
+    "T-002": {
+      "created": "2026-02-27T23:00:00Z",
+      "priority": "high",
+      "title": "Run scripts/create-roadmap-issues.sh after gh auth login",
       "status": "ready",
       "depends_on": []
+    },
+    "T-003": {
+      "created": "2026-02-27T23:00:00Z",
+      "priority": "high",
+      "title": "Add unit test suite for core healing logic",
+      "status": "ready",
+      "depends_on": ["T-002"]
+    },
+    "T-004": {
+      "created": "2026-02-27T23:00:00Z",
+      "priority": "high",
+      "title": "Add TypeScript build pipeline and type-checking",
+      "status": "ready",
+      "depends_on": ["T-002"]
+    },
+    "T-005": {
+      "created": "2026-02-27T23:00:00Z",
+      "priority": "high",
+      "title": "Implement structured plugin health monitoring and auto-disable",
+      "status": "blocked",
+      "depends_on": ["T-002"],
+      "blocked_reason": "Waiting for openclaw plugins list --json API"
     }
   },
-  "quick_context": "openclaw-self-healing-homeofe initial scaffold complete. v0.2 roadmap definition pending.",
+  "quick_context": "v0.3 roadmap defined: 8 items (3 high, 3 medium, 2 low). Test suite and TS build pipeline are top priorities. GitHub issue creation blocked on gh auth - run scripts/create-roadmap-issues.sh when ready.",
   "aahp_version": "3.0",
   "project": "openclaw-self-healing-homeofe",
   "token_budget": {
@@ -25,12 +61,12 @@
     "manifest_plus_core": 300
   },
   "last_session": {
-    "timestamp": "2026-02-28T00:00:00Z",
+    "timestamp": "2026-02-27T23:00:00Z",
     "phase": "planning",
-    "agent": "human",
+    "agent": "claude-opus-4-6",
     "commit": "",
-    "duration_minutes": 0,
-    "session_id": "scaffold-init"
+    "duration_minutes": 5,
+    "session_id": "roadmap-definition"
   },
-  "next_task_id": 2
+  "next_task_id": 6
 }
