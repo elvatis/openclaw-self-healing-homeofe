@@ -1,4 +1,4 @@
-import fs from "node:fs";
+﻿import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 
@@ -375,7 +375,7 @@ export default function register(api: any) {
                   // Issue goes to this repo by default
                   await runCmd(
                     api,
-                    `gh issue create -R homeofe/openclaw-self-healing-homeofe --title "Cron disabled: ${name}" --body ${JSON.stringify(body)} --label security`,
+                    `gh issue create -R elvatis/openclaw-self-healing-elvatis --title "Cron disabled: ${name}" --body ${JSON.stringify(body)} --label security`,
                     20000
                   );
                   state.cron!.lastIssueCreatedAt![id] = nowSec();

@@ -1,4 +1,4 @@
-{
+﻿{
   "files": {
     "NEXT_ACTIONS.md": {
       "checksum": "sha256:pending",
@@ -60,7 +60,7 @@
   },
   "quick_context": "T-004 done: TypeScript build pipeline added (tsconfig.json, tsc build/typecheck, pretest hook). 52 tests pass with zero type errors. Next: T-005 (plugin health monitoring) is blocked on openclaw plugins list --json API.",
   "aahp_version": "3.0",
-  "project": "openclaw-self-healing-homeofe",
+  "project": "openclaw-self-healing-elvatis",
   "token_budget": {
     "full_read": 1000,
     "manifest_only": 100,

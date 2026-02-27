@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+﻿#!/usr/bin/env bash
 # create-roadmap-issues.sh
 #
 # Creates v0.3 roadmap issues on GitHub.
@@ -9,7 +9,7 @@
 
 set -euo pipefail
 
-REPO="homeofe/openclaw-self-healing-homeofe"
+REPO="elvatis/openclaw-self-healing-elvatis"
 DRY_RUN=false
 if [[ "${1:-}" == "--dry-run" ]]; then
   DRY_RUN=true
