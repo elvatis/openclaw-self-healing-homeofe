@@ -14,8 +14,10 @@ import {
   safeJsonParse,
   parseConfig,
   configDiff,
+  buildStatusSnapshot,
   type State,
   type PluginConfig,
+  type StatusSnapshot,
 } from "../index.js";
 import register from "../index.js";
 
@@ -2051,5 +2053,203 @@ describe("configDiff", () => {
     expect(diff).toContain("cooldownMinutes");
     expect(diff).toContain("cronFailThreshold");
     expect(diff).toContain("whatsappRestartEnabled");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildStatusSnapshot
+// ---------------------------------------------------------------------------
+
+describe("buildStatusSnapshot", () => {
+  function defaultConfig(overrides: Partial<PluginConfig> = {}): PluginConfig {
+    return parseConfig(overrides);
+  }
+
+  it("returns healthy status when no models are in cooldown", () => {
+    const state = emptyState();
+    const config = defaultConfig();
+    const snap = buildStatusSnapshot(state, config);
+
+    expect(snap.health).toBe("healthy");
+    expect(snap.activeModel).toBe(config.modelOrder[0]);
+    expect(snap.models).toHaveLength(config.modelOrder.length);
+    expect(snap.models.every((m) => m.status === "available")).toBe(true);
+    expect(snap.generatedAt).toBeGreaterThan(0);
+  });
+
+  it("returns degraded status when some models are in cooldown", () => {
+    const state = emptyState();
+    const config = defaultConfig();
+    const t = nowSec();
+    state.limited[config.modelOrder[0]] = {
+      lastHitAt: t,
+      nextAvailableAt: t + 3600,
+      reason: "rate limit",
+    };
+    const snap = buildStatusSnapshot(state, config);
+
+    expect(snap.health).toBe("degraded");
+    expect(snap.activeModel).toBe(config.modelOrder[1]);
+    expect(snap.models[0].status).toBe("cooldown");
+    expect(snap.models[0].cooldownReason).toBe("rate limit");
+    expect(snap.models[0].cooldownRemainingSec).toBeGreaterThan(0);
+    expect(snap.models[0].nextAvailableAt).toBe(t + 3600);
+    expect(snap.models[1].status).toBe("available");
+  });
+
+  it("returns healing status when all models are in cooldown", () => {
+    const state = emptyState();
+    const config = defaultConfig();
+    const t = nowSec();
+    for (const m of config.modelOrder) {
+      state.limited[m] = { lastHitAt: t, nextAvailableAt: t + 3600 };
+    }
+    const snap = buildStatusSnapshot(state, config);
+
+    expect(snap.health).toBe("healing");
+    expect(snap.models.every((m) => m.status === "cooldown")).toBe(true);
+    // activeModel falls back to the last model in order
+    expect(snap.activeModel).toBe(config.modelOrder[config.modelOrder.length - 1]);
+  });
+
+  it("excludes expired cooldowns from cooldown status", () => {
+    const state = emptyState();
+    const config = defaultConfig();
+    const t = nowSec();
+    state.limited[config.modelOrder[0]] = {
+      lastHitAt: t - 7200,
+      nextAvailableAt: t - 100, // expired
+    };
+    const snap = buildStatusSnapshot(state, config);
+
+    expect(snap.health).toBe("healthy");
+    expect(snap.models[0].status).toBe("available");
+    expect(snap.models[0].cooldownReason).toBeUndefined();
+  });
+
+  it("includes lastProbeAt in cooldown model details", () => {
+    const state = emptyState();
+    const config = defaultConfig();
+    const t = nowSec();
+    state.limited[config.modelOrder[0]] = {
+      lastHitAt: t,
+      nextAvailableAt: t + 3600,
+      reason: "429",
+      lastProbeAt: t + 300,
+    };
+    const snap = buildStatusSnapshot(state, config);
+
+    expect(snap.models[0].lastProbeAt).toBe(t + 300);
+  });
+
+  it("reports WhatsApp as connected when lastSeenConnectedAt is set and streak is 0", () => {
+    const state = emptyState();
+    const config = defaultConfig();
+    state.whatsapp = { lastSeenConnectedAt: nowSec(), disconnectStreak: 0 };
+    const snap = buildStatusSnapshot(state, config);
+
+    expect(snap.whatsapp.status).toBe("connected");
+    expect(snap.whatsapp.disconnectStreak).toBe(0);
+    expect(snap.whatsapp.lastSeenConnectedAt).toBeGreaterThan(0);
+  });
+
+  it("reports WhatsApp as disconnected when streak > 0", () => {
+    const state = emptyState();
+    const config = defaultConfig();
+    state.whatsapp = { disconnectStreak: 3, lastRestartAt: 1000 };
+    const snap = buildStatusSnapshot(state, config);
+
+    expect(snap.whatsapp.status).toBe("disconnected");
+    expect(snap.whatsapp.disconnectStreak).toBe(3);
+    expect(snap.whatsapp.lastRestartAt).toBe(1000);
+  });
+
+  it("reports WhatsApp as unknown when no data is available", () => {
+    const state = emptyState();
+    const config = defaultConfig();
+    const snap = buildStatusSnapshot(state, config);
+
+    expect(snap.whatsapp.status).toBe("unknown");
+    expect(snap.whatsapp.disconnectStreak).toBe(0);
+    expect(snap.whatsapp.lastRestartAt).toBeNull();
+    expect(snap.whatsapp.lastSeenConnectedAt).toBeNull();
+  });
+
+  it("reports cron failing jobs", () => {
+    const state = emptyState();
+    const config = defaultConfig();
+    state.cron = {
+      failCounts: { "job-1": 3, "job-2": 0, "job-3": 1 },
+      lastIssueCreatedAt: {},
+    };
+    const snap = buildStatusSnapshot(state, config);
+
+    expect(snap.cron.trackedJobs).toBe(3);
+    expect(snap.cron.failingJobs).toHaveLength(2);
+    expect(snap.cron.failingJobs).toEqual(
+      expect.arrayContaining([
+        { id: "job-1", consecutiveFailures: 3 },
+        { id: "job-3", consecutiveFailures: 1 },
+      ])
+    );
+  });
+
+  it("reports empty cron state when no jobs are tracked", () => {
+    const state = emptyState();
+    const config = defaultConfig();
+    const snap = buildStatusSnapshot(state, config);
+
+    expect(snap.cron.trackedJobs).toBe(0);
+    expect(snap.cron.failingJobs).toEqual([]);
+  });
+
+  it("includes config summary in snapshot", () => {
+    const config = defaultConfig({ dryRun: true, probeEnabled: false, cooldownMinutes: 60 });
+    const snap = buildStatusSnapshot(emptyState(), config);
+
+    expect(snap.config.dryRun).toBe(true);
+    expect(snap.config.probeEnabled).toBe(false);
+    expect(snap.config.cooldownMinutes).toBe(60);
+    expect(snap.config.modelOrder).toEqual(config.modelOrder);
+  });
+
+  it("config.modelOrder is a copy, not a reference", () => {
+    const config = defaultConfig();
+    const snap = buildStatusSnapshot(emptyState(), config);
+
+    snap.config.modelOrder.push("mutated");
+    expect(config.modelOrder).not.toContain("mutated");
+  });
+
+  it("emits self-heal:status event during monitor tick", async () => {
+    const dir = tmpDir();
+    const stateFile = path.join(dir, "state.json");
+    const sessionsFile = path.join(dir, "sessions.json");
+    const configFile = path.join(dir, "config.json");
+    const backupsDir = path.join(dir, "backups");
+    fs.writeFileSync(stateFile, JSON.stringify({ limited: {} }));
+    fs.writeFileSync(sessionsFile, "{}");
+    fs.writeFileSync(configFile, "{}");
+
+    const api = mockApi({
+      pluginConfig: { stateFile, sessionsFile, configFile, configBackupsDir: backupsDir },
+    });
+    register(api);
+
+    const svc = api._services[0];
+    await svc.start();
+    await svc.stop();
+
+    const statusEvents = api._emitted.filter((e: any) => e.event === "self-heal:status");
+    expect(statusEvents).toHaveLength(1);
+
+    const snap = statusEvents[0].payload as StatusSnapshot;
+    expect(snap.health).toBe("healthy");
+    expect(snap.generatedAt).toBeGreaterThan(0);
+    expect(snap.activeModel).toBeTruthy();
+    expect(snap.models).toBeDefined();
+    expect(snap.whatsapp).toBeDefined();
+    expect(snap.cron).toBeDefined();
+    expect(snap.config).toBeDefined();
   });
 });

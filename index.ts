@@ -26,6 +26,104 @@ export type State = {
   };
 };
 
+export type StatusSnapshot = {
+  health: "healthy" | "degraded" | "healing";
+  activeModel: string;
+  models: {
+    id: string;
+    status: "available" | "cooldown";
+    cooldownReason?: string;
+    cooldownRemainingSec?: number;
+    nextAvailableAt?: number;
+    lastProbeAt?: number;
+  }[];
+  whatsapp: {
+    status: "connected" | "disconnected" | "unknown";
+    disconnectStreak: number;
+    lastRestartAt: number | null;
+    lastSeenConnectedAt: number | null;
+  };
+  cron: {
+    trackedJobs: number;
+    failingJobs: { id: string; consecutiveFailures: number }[];
+  };
+  config: {
+    dryRun: boolean;
+    probeEnabled: boolean;
+    cooldownMinutes: number;
+    modelOrder: string[];
+  };
+  generatedAt: number;
+};
+
+export function buildStatusSnapshot(state: State, config: PluginConfig): StatusSnapshot {
+  const t = nowSec();
+
+  // Build model status list
+  const models = config.modelOrder.map((id) => {
+    const lim = state.limited[id];
+    const inCooldown = lim != null && lim.nextAvailableAt > t;
+    return {
+      id,
+      status: (inCooldown ? "cooldown" : "available") as "available" | "cooldown",
+      ...(inCooldown
+        ? {
+            cooldownReason: lim!.reason,
+            cooldownRemainingSec: lim!.nextAvailableAt - t,
+            nextAvailableAt: lim!.nextAvailableAt,
+            lastProbeAt: lim!.lastProbeAt,
+          }
+        : {}),
+    };
+  });
+
+  // Active model is the first available from the order
+  const activeModel = pickFallback(config.modelOrder, state);
+
+  // Determine health
+  const cooldownCount = models.filter((m) => m.status === "cooldown").length;
+  const health: StatusSnapshot["health"] =
+    cooldownCount === 0 ? "healthy" : cooldownCount < config.modelOrder.length ? "degraded" : "healing";
+
+  // WhatsApp status
+  const wa = state.whatsapp ?? {};
+  const waStatus: StatusSnapshot["whatsapp"]["status"] =
+    wa.lastSeenConnectedAt != null && wa.disconnectStreak === 0
+      ? "connected"
+      : (wa.disconnectStreak ?? 0) > 0
+        ? "disconnected"
+        : "unknown";
+
+  // Cron status
+  const failCounts = state.cron?.failCounts ?? {};
+  const failingJobs = Object.entries(failCounts)
+    .filter(([, count]) => count > 0)
+    .map(([id, consecutiveFailures]) => ({ id, consecutiveFailures }));
+
+  return {
+    health,
+    activeModel,
+    models,
+    whatsapp: {
+      status: waStatus,
+      disconnectStreak: wa.disconnectStreak ?? 0,
+      lastRestartAt: wa.lastRestartAt ?? null,
+      lastSeenConnectedAt: wa.lastSeenConnectedAt ?? null,
+    },
+    cron: {
+      trackedJobs: Object.keys(failCounts).length,
+      failingJobs,
+    },
+    config: {
+      dryRun: config.dryRun,
+      probeEnabled: config.probeEnabled,
+      cooldownMinutes: config.cooldownMinutes,
+      modelOrder: [...config.modelOrder],
+    },
+    generatedAt: t,
+  };
+}
+
 export type PluginConfig = {
   modelOrder: string[];
   cooldownMinutes: number;
@@ -589,6 +687,10 @@ export default function register(api: any) {
         }
 
         saveState(config.stateFile, state);
+
+        // Emit status snapshot for external monitoring
+        const snapshot = buildStatusSnapshot(state, config);
+        api.emit?.("self-heal:status", snapshot);
       };
 
       // tick every 60s
