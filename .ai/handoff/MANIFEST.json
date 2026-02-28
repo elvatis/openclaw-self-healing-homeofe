@@ -88,17 +88,18 @@
       "notes": "## Summary\n\nThere is no way to test what the plugin would do without it actually taking healing actions (restarting gateways, disabling crons, patching sessions). A dry-run mode is needed for validation and debugging.\n\n## Scope\n\n- Add a `dryRun: boolean` config option (default: false)\n- When enabled: log all actions that _would_ be taken, but do not execute them\n- State tracking still updates (to test state transitions) but side-effects are skipped\n- Useful for: initial setup validation, debuggi",
       "github_issue": 6,
       "github_repo": "elvatis/openclaw-self-healing-homeofe",
-      "completed": "2026-02-28T15:15:00.000Z"
+      "completed": "2026-02-28T15:14:21.885Z"
     },
     "T-009": {
       "title": "Emit structured observability events for heal actions",
-      "status": "ready",
+      "status": "done",
       "priority": "medium",
       "depends_on": [],
       "created": "2026-02-28T13:25:43.204Z",
       "notes": "## Summary\n\nThe plugin uses `api.logger` for logging but emits no structured events. Monitoring and alerting systems cannot track heal actions, cooldown entries, or failure rates.\n\n## Scope\n\n- Emit structured events via `api.emit()` or equivalent for:\n  - `self-heal:model-cooldown` - model put into cooldown (with model ID, reason, duration)\n  - `self-heal:session-patched` - session model pin overridden (with session key, old/new model)\n  - `self-heal:whatsapp-restart` - WhatsApp gateway restarte",
       "github_issue": 5,
-      "github_repo": "elvatis/openclaw-self-healing-homeofe"
+      "github_repo": "elvatis/openclaw-self-healing-homeofe",
+      "completed": "2026-02-28T16:22:00.000Z"
     },
     "T-010": {
       "title": "Expose self-heal status for external monitoring",
@@ -111,7 +112,7 @@
       "github_repo": "elvatis/openclaw-self-healing-homeofe"
     }
   },
-  "quick_context": "T-008 done: Dry-run mode - dryRun config option logs all healing actions without executing side-effects, state tracking still updates for validation. 88 tests pass, zero type errors. T-005 still blocked on openclaw plugins list --json API.",
+  "quick_context": "T-009 done: Structured observability events - api.emit() calls for model-cooldown, session-patched, whatsapp-restart, cron-disabled, model-recovered. 102 tests pass, zero type errors. T-005 still blocked on openclaw plugins list --json API.",
   "aahp_version": "3.0",
   "project": "openclaw-self-healing-elvatis",
   "token_budget": {
@@ -120,12 +121,12 @@
     "manifest_plus_core": 300
   },
   "last_session": {
-    "timestamp": "2026-02-28T15:15:00.000Z",
+    "timestamp": "2026-02-28T16:22:00.000Z",
     "phase": "execution",
     "agent": "claude-code",
-    "commit": "58f36bf",
+    "commit": "325b2d9",
     "duration_minutes": 5,
-    "session_id": "t008-dry-run-mode"
+    "session_id": "t009-observability-events"
   },
   "next_task_id": 11
 }
