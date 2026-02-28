@@ -12,6 +12,11 @@
         "type": "boolean",
         "default": true
       },
+      "dryRun": {
+        "type": "boolean",
+        "default": false,
+        "description": "When true, log all healing actions that would be taken without executing them. State tracking still updates to test state transitions."
+      },
       "modelOrder": {
         "type": "array",
         "items": {

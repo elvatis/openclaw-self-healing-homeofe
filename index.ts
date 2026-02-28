@@ -44,6 +44,7 @@ export type PluginConfig = {
   pluginDisableCooldownSec: number;
   probeEnabled: boolean;
   probeIntervalSec: number;
+  dryRun: boolean;
 };
 
 const DEFAULT_MODEL_ORDER = [
@@ -73,6 +74,7 @@ export function parseConfig(raw: any): PluginConfig {
     pluginDisableCooldownSec: autoFix.pluginDisableCooldownSec ?? 3600,
     probeEnabled: cfg.probeEnabled !== false,
     probeIntervalSec: cfg.probeIntervalSec ?? 300,
+    dryRun: cfg.dryRun === true,
   };
 }
 
@@ -192,10 +194,12 @@ export default function register(api: any) {
 
   let config = parseConfig(raw);
 
-  api.logger?.info?.(`[self-heal] enabled. order=${config.modelOrder.join(" -> ")}`);
+  api.logger?.info?.(`[self-heal] enabled.${config.dryRun ? " DRY-RUN MODE." : ""} order=${config.modelOrder.join(" -> ")}`);
 
   // If the gateway booted and config is valid, remove any pending backups from previous runs.
-  cleanupPendingBackups("startup").catch(() => undefined);
+  if (!config.dryRun) {
+    cleanupPendingBackups("startup").catch(() => undefined);
+  }
 
   function isConfigValid(): { ok: boolean; error?: string } {
     try {
@@ -316,7 +320,11 @@ export default function register(api: any) {
     const fallback = pickFallback(config.modelOrder, state);
 
     if (config.patchPins && ctx?.sessionKey && fallback && fallback !== pinnedModel) {
-      patchSessionModel(config.sessionsFile, ctx.sessionKey, fallback, api.logger);
+      if (config.dryRun) {
+        api.logger?.info?.(`[self-heal] [dry-run] would patch session ${ctx.sessionKey} model: ${pinnedModel} -> ${fallback}`);
+      } else {
+        patchSessionModel(config.sessionsFile, ctx.sessionKey, fallback, api.logger);
+      }
     }
   });
 
@@ -337,7 +345,11 @@ export default function register(api: any) {
 
     const fallback = pickFallback(config.modelOrder, state);
     if (config.patchPins && ctx?.sessionKey) {
-      patchSessionModel(config.sessionsFile, ctx.sessionKey, fallback, api.logger);
+      if (config.dryRun) {
+        api.logger?.info?.(`[self-heal] [dry-run] would patch session ${ctx.sessionKey} model -> ${fallback}`);
+      } else {
+        patchSessionModel(config.sessionsFile, ctx.sessionKey, fallback, api.logger);
+      }
     }
   });
 
@@ -374,20 +386,28 @@ export default function register(api: any) {
                 since >= config.whatsappMinRestartIntervalSec;
 
               if (shouldRestart) {
-                api.logger?.warn?.(
-                  `[self-heal] WhatsApp appears disconnected (streak=${state.whatsapp!.disconnectStreak}). Restarting gateway.`
-                );
-                // Guardrail: never restart if openclaw.json is invalid
-                const v = isConfigValid();
-                if (!v.ok) {
-                  api.logger?.error?.(`[self-heal] NOT restarting gateway: openclaw.json invalid: ${v.error}`);
-                } else {
-                  backupConfig("pre-gateway-restart");
-                  await runCmd(api, "openclaw gateway restart", 60000);
-                  // If we are still alive after restart, attempt cleanup.
-                  await cleanupPendingBackups("post-gateway-restart");
+                if (config.dryRun) {
+                  api.logger?.info?.(
+                    `[self-heal] [dry-run] would restart gateway (WhatsApp disconnect streak=${state.whatsapp!.disconnectStreak})`
+                  );
                   state.whatsapp!.lastRestartAt = nowSec();
                   state.whatsapp!.disconnectStreak = 0;
+                } else {
+                  api.logger?.warn?.(
+                    `[self-heal] WhatsApp appears disconnected (streak=${state.whatsapp!.disconnectStreak}). Restarting gateway.`
+                  );
+                  // Guardrail: never restart if openclaw.json is invalid
+                  const v = isConfigValid();
+                  if (!v.ok) {
+                    api.logger?.error?.(`[self-heal] NOT restarting gateway: openclaw.json invalid: ${v.error}`);
+                  } else {
+                    backupConfig("pre-gateway-restart");
+                    await runCmd(api, "openclaw gateway restart", 60000);
+                    // If we are still alive after restart, attempt cleanup.
+                    await cleanupPendingBackups("post-gateway-restart");
+                    state.whatsapp!.lastRestartAt = nowSec();
+                    state.whatsapp!.disconnectStreak = 0;
+                  }
                 }
               }
             }
@@ -411,40 +431,53 @@ export default function register(api: any) {
               state.cron!.failCounts![id] = isFail ? prev + 1 : 0;
 
               if (isFail && state.cron!.failCounts![id] >= config.cronFailThreshold) {
-                // Guardrail: do not touch crons if config is invalid
-                const v = isConfigValid();
-                if (!v.ok) {
-                  api.logger?.error?.(`[self-heal] NOT disabling cron: openclaw.json invalid: ${v.error}`);
-                } else {
-                  // Disable the cron
-                  api.logger?.warn?.(`[self-heal] Disabling failing cron ${name} (${id}).`);
-                  backupConfig("pre-cron-disable");
-                  await runCmd(api, `openclaw cron edit ${id} --disable`, 15000);
-                  await cleanupPendingBackups("post-cron-disable");
-                }
-
-                // Create issue, but rate limit issue creation
-                const lastIssueAt = state.cron!.lastIssueCreatedAt![id] ?? 0;
-                if (nowSec() - lastIssueAt >= config.issueCooldownSec) {
-                  const body = [
-                    `Cron job failed repeatedly and was disabled by openclaw-self-healing.`,
-                    ``,
-                    `Name: ${name}`,
-                    `ID: ${id}`,
-                    `Consecutive failures: ${state.cron!.failCounts![id]}`,
-                    `Last error:`,
-                    "```",
-                    lastError.slice(0, 1200),
-                    "```",
-                  ].join("\n");
-
-                  // Issue goes to this repo by default
-                  await runCmd(
-                    api,
-                    `gh issue create -R elvatis/openclaw-self-healing-elvatis --title "Cron disabled: ${name}" --body ${JSON.stringify(body)} --label security`,
-                    20000
+                if (config.dryRun) {
+                  api.logger?.info?.(
+                    `[self-heal] [dry-run] would disable cron ${name} (${id}), failures=${state.cron!.failCounts![id]}`
                   );
-                  state.cron!.lastIssueCreatedAt![id] = nowSec();
+                  const lastIssueAt = state.cron!.lastIssueCreatedAt![id] ?? 0;
+                  if (nowSec() - lastIssueAt >= config.issueCooldownSec) {
+                    api.logger?.info?.(
+                      `[self-heal] [dry-run] would create GitHub issue for cron ${name} (${id})`
+                    );
+                    state.cron!.lastIssueCreatedAt![id] = nowSec();
+                  }
+                } else {
+                  // Guardrail: do not touch crons if config is invalid
+                  const v = isConfigValid();
+                  if (!v.ok) {
+                    api.logger?.error?.(`[self-heal] NOT disabling cron: openclaw.json invalid: ${v.error}`);
+                  } else {
+                    // Disable the cron
+                    api.logger?.warn?.(`[self-heal] Disabling failing cron ${name} (${id}).`);
+                    backupConfig("pre-cron-disable");
+                    await runCmd(api, `openclaw cron edit ${id} --disable`, 15000);
+                    await cleanupPendingBackups("post-cron-disable");
+                  }
+
+                  // Create issue, but rate limit issue creation
+                  const lastIssueAt = state.cron!.lastIssueCreatedAt![id] ?? 0;
+                  if (nowSec() - lastIssueAt >= config.issueCooldownSec) {
+                    const body = [
+                      `Cron job failed repeatedly and was disabled by openclaw-self-healing.`,
+                      ``,
+                      `Name: ${name}`,
+                      `ID: ${id}`,
+                      `Consecutive failures: ${state.cron!.failCounts![id]}`,
+                      `Last error:`,
+                      "```",
+                      lastError.slice(0, 1200),
+                      "```",
+                    ].join("\n");
+
+                    // Issue goes to this repo by default
+                    await runCmd(
+                      api,
+                      `gh issue create -R elvatis/openclaw-self-healing-elvatis --title "Cron disabled: ${name}" --body ${JSON.stringify(body)} --label security`,
+                      20000
+                    );
+                    state.cron!.lastIssueCreatedAt![id] = nowSec();
+                  }
                 }
 
                 state.cron!.failCounts![id] = 0;
@@ -480,20 +513,24 @@ export default function register(api: any) {
             const lastProbe = info.lastProbeAt ?? info.lastHitAt;
             if (t - lastProbe < config.probeIntervalSec) continue;
 
-            // Probe the model
-            const res = await runCmd(api, `openclaw model probe "${model}"`, 15000);
-            state.limited[model].lastProbeAt = t;
+            if (config.dryRun) {
+              api.logger?.info?.(`[self-heal] [dry-run] would probe model ${model}`);
+            } else {
+              // Probe the model
+              const res = await runCmd(api, `openclaw model probe "${model}"`, 15000);
+              state.limited[model].lastProbeAt = t;
 
-            if (res.ok) {
-              api.logger?.info?.(
-                `[self-heal] model ${model} recovered early via probe, removing from cooldown`
-              );
-              delete state.limited[model];
-
-              if (model === config.modelOrder[0]) {
+              if (res.ok) {
                 api.logger?.info?.(
-                  `[self-heal] preferred model ${model} recovered, will be used for new requests`
+                  `[self-heal] model ${model} recovered early via probe, removing from cooldown`
                 );
+                delete state.limited[model];
+
+                if (model === config.modelOrder[0]) {
+                  api.logger?.info?.(
+                    `[self-heal] preferred model ${model} recovered, will be used for new requests`
+                  );
+                }
               }
             }
           }

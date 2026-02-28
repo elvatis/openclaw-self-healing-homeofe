@@ -1158,6 +1158,57 @@ describe("register", () => {
       expect(preferredCalls).toHaveLength(0);
     });
 
+    it("does not probe in dry-run mode but logs what would happen", async () => {
+      const hitAt = nowSec() - 400;
+      saveState(stateFile, {
+        ...emptyState(),
+        limited: {
+          "model-a": { lastHitAt: hitAt, nextAvailableAt: nowSec() + 9999 },
+        },
+      });
+
+      const api = mockApi({
+        pluginConfig: {
+          stateFile,
+          sessionsFile,
+          configFile,
+          modelOrder: ["model-a", "model-b"],
+          probeEnabled: true,
+          probeIntervalSec: 300,
+          dryRun: true,
+        },
+      });
+      api.runtime.system.runCommandWithTimeout.mockResolvedValue({
+        exitCode: 0,
+        stdout: "ok",
+        stderr: "",
+      });
+      register(api);
+
+      const svc = api._services[0];
+      await svc.start();
+      await new Promise((r) => setTimeout(r, 50));
+      await svc.stop();
+
+      // Model should still be in cooldown since dry-run skips probing
+      const state = loadState(stateFile);
+      expect(state.limited["model-a"]).toBeDefined();
+
+      // Should log dry-run message
+      expect(api.logger.info).toHaveBeenCalledWith(
+        expect.stringContaining("[dry-run] would probe model model-a")
+      );
+
+      // Should NOT have called the actual probe command
+      const probeCalls = api.runtime.system.runCommandWithTimeout.mock.calls.filter(
+        (c: any[]) => {
+          const cmd = c[0]?.command?.join(" ") ?? "";
+          return cmd.includes("model probe");
+        }
+      );
+      expect(probeCalls).toHaveLength(0);
+    });
+
     it("probes multiple models in cooldown independently", async () => {
       const hitAt = nowSec() - 400;
       saveState(stateFile, {
@@ -1204,6 +1255,263 @@ describe("register", () => {
       expect(probeCount).toBe(2);
     });
   });
+
+  describe("dry-run mode", () => {
+    it("logs DRY-RUN MODE in startup message", () => {
+      const api = mockApi({
+        pluginConfig: {
+          stateFile,
+          sessionsFile,
+          configFile,
+          configBackupsDir: path.join(dir, "backups"),
+          dryRun: true,
+        },
+      });
+      register(api);
+
+      expect(api.logger.info).toHaveBeenCalledWith(
+        expect.stringContaining("DRY-RUN MODE")
+      );
+    });
+
+    it("still registers handlers and service in dry-run mode", () => {
+      const api = mockApi({
+        pluginConfig: {
+          stateFile,
+          sessionsFile,
+          configFile,
+          configBackupsDir: path.join(dir, "backups"),
+          dryRun: true,
+        },
+      });
+      register(api);
+
+      expect(api._handlers["agent_end"]).toHaveLength(1);
+      expect(api._handlers["message_sent"]).toHaveLength(1);
+      expect(api._services).toHaveLength(1);
+    });
+
+    it("updates state but does not patch session on agent_end in dry-run", () => {
+      fs.writeFileSync(
+        sessionsFile,
+        JSON.stringify({ "s1": { model: "model-a" } })
+      );
+
+      const api = mockApi({
+        pluginConfig: {
+          stateFile,
+          sessionsFile,
+          configFile,
+          modelOrder: ["model-a", "model-b"],
+          cooldownMinutes: 10,
+          dryRun: true,
+        },
+      });
+      register(api);
+
+      api._emit(
+        "agent_end",
+        { success: false, error: "rate limit hit" },
+        { sessionKey: "s1" }
+      );
+
+      // State should still be updated (model marked as limited)
+      const state = loadState(stateFile);
+      expect(state.limited["model-a"]).toBeDefined();
+
+      // But session file should NOT be patched
+      const sessions = JSON.parse(fs.readFileSync(sessionsFile, "utf-8"));
+      expect(sessions["s1"].model).toBe("model-a");
+
+      // Should log dry-run message
+      expect(api.logger.info).toHaveBeenCalledWith(
+        expect.stringContaining("[dry-run] would patch session s1")
+      );
+    });
+
+    it("updates state but does not patch session on message_sent in dry-run", () => {
+      fs.writeFileSync(
+        sessionsFile,
+        JSON.stringify({ "s1": { model: "primary" } })
+      );
+
+      const api = mockApi({
+        pluginConfig: {
+          stateFile,
+          sessionsFile,
+          configFile,
+          modelOrder: ["primary", "fallback"],
+          cooldownMinutes: 5,
+          dryRun: true,
+        },
+      });
+      register(api);
+
+      api._emit(
+        "message_sent",
+        { content: "429 Too Many Requests" },
+        { sessionKey: "s1" }
+      );
+
+      // State should still be updated
+      const state = loadState(stateFile);
+      expect(state.limited["primary"]).toBeDefined();
+
+      // But session file should NOT be patched
+      const sessions = JSON.parse(fs.readFileSync(sessionsFile, "utf-8"));
+      expect(sessions["s1"].model).toBe("primary");
+
+      // Should log dry-run message
+      expect(api.logger.info).toHaveBeenCalledWith(
+        expect.stringContaining("[dry-run] would patch session s1")
+      );
+    });
+
+    it("logs but does not restart gateway in dry-run mode", async () => {
+      const api = mockApi({
+        pluginConfig: {
+          stateFile,
+          sessionsFile,
+          configFile,
+          configBackupsDir: path.join(dir, "backups"),
+          modelOrder: ["model-a"],
+          dryRun: true,
+          autoFix: { restartWhatsappOnDisconnect: true, whatsappDisconnectThreshold: 2 },
+        },
+      });
+
+      // Return WhatsApp disconnected status
+      api.runtime.system.runCommandWithTimeout.mockResolvedValue({
+        exitCode: 0,
+        stdout: JSON.stringify({ channels: { whatsapp: { status: "disconnected" } } }),
+        stderr: "",
+      });
+
+      // Seed state with streak at threshold
+      saveState(stateFile, {
+        ...emptyState(),
+        whatsapp: { disconnectStreak: 2, lastRestartAt: 0 },
+      });
+
+      register(api);
+
+      const svc = api._services[0];
+      await svc.start();
+      await new Promise((r) => setTimeout(r, 50));
+      await svc.stop();
+
+      // Should log dry-run message
+      expect(api.logger.info).toHaveBeenCalledWith(
+        expect.stringContaining("[dry-run] would restart gateway")
+      );
+
+      // Should NOT have called gateway restart
+      const restartCalls = api.runtime.system.runCommandWithTimeout.mock.calls.filter(
+        (c: any[]) => {
+          const cmd = c[0]?.command?.join(" ") ?? "";
+          return cmd.includes("gateway restart");
+        }
+      );
+      expect(restartCalls).toHaveLength(0);
+
+      // State should still track the restart
+      const state = loadState(stateFile);
+      expect(state.whatsapp!.lastRestartAt).toBeGreaterThan(0);
+      expect(state.whatsapp!.disconnectStreak).toBe(0);
+    });
+
+    it("logs but does not disable cron or create issue in dry-run mode", async () => {
+      const api = mockApi({
+        pluginConfig: {
+          stateFile,
+          sessionsFile,
+          configFile,
+          configBackupsDir: path.join(dir, "backups"),
+          modelOrder: ["model-a"],
+          dryRun: true,
+          autoFix: { disableFailingCrons: true, cronFailThreshold: 1 },
+        },
+      });
+
+      // Return failing cron
+      api.runtime.system.runCommandWithTimeout.mockResolvedValue({
+        exitCode: 0,
+        stdout: JSON.stringify({
+          jobs: [{ id: "cron-1", name: "test-cron", state: { lastStatus: "error", lastError: "timeout" } }],
+        }),
+        stderr: "",
+      });
+
+      register(api);
+
+      const svc = api._services[0];
+      await svc.start();
+      await new Promise((r) => setTimeout(r, 50));
+      await svc.stop();
+
+      // Should log dry-run messages
+      expect(api.logger.info).toHaveBeenCalledWith(
+        expect.stringContaining("[dry-run] would disable cron test-cron")
+      );
+      expect(api.logger.info).toHaveBeenCalledWith(
+        expect.stringContaining("[dry-run] would create GitHub issue for cron test-cron")
+      );
+
+      // Should NOT have called cron edit disable
+      const cronCalls = api.runtime.system.runCommandWithTimeout.mock.calls.filter(
+        (c: any[]) => {
+          const cmd = c[0]?.command?.join(" ") ?? "";
+          return cmd.includes("cron edit");
+        }
+      );
+      expect(cronCalls).toHaveLength(0);
+
+      // Should NOT have called gh issue create
+      const issueCalls = api.runtime.system.runCommandWithTimeout.mock.calls.filter(
+        (c: any[]) => {
+          const cmd = c[0]?.command?.join(" ") ?? "";
+          return cmd.includes("gh issue create");
+        }
+      );
+      expect(issueCalls).toHaveLength(0);
+
+      // State should still be updated (fail count reset, issue timestamp set)
+      const state = loadState(stateFile);
+      expect(state.cron!.failCounts!["cron-1"]).toBe(0);
+      expect(state.cron!.lastIssueCreatedAt!["cron-1"]).toBeGreaterThan(0);
+    });
+
+    it("picks up dryRun changes via hot-reload", async () => {
+      const api = mockApi({
+        pluginConfig: {
+          stateFile,
+          sessionsFile,
+          configFile,
+          modelOrder: ["model-a"],
+          dryRun: false,
+        },
+      });
+      register(api);
+
+      // Enable dry-run via hot-reload
+      api.pluginConfig = {
+        stateFile,
+        sessionsFile,
+        configFile,
+        modelOrder: ["model-a"],
+        dryRun: true,
+      };
+
+      const svc = api._services[0];
+      await svc.start();
+      await new Promise((r) => setTimeout(r, 50));
+      await svc.stop();
+
+      expect(api.logger.info).toHaveBeenCalledWith(
+        expect.stringContaining("config reloaded: changed dryRun")
+      );
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1230,6 +1538,7 @@ describe("parseConfig", () => {
     expect(c.pluginDisableCooldownSec).toBe(3600);
     expect(c.probeEnabled).toBe(true);
     expect(c.probeIntervalSec).toBe(300);
+    expect(c.dryRun).toBe(false);
   });
 
   it("returns defaults for undefined input", () => {
@@ -1271,6 +1580,11 @@ describe("parseConfig", () => {
     const c = parseConfig({ probeEnabled: false, probeIntervalSec: 120 });
     expect(c.probeEnabled).toBe(false);
     expect(c.probeIntervalSec).toBe(120);
+  });
+
+  it("applies dryRun config", () => {
+    const c = parseConfig({ dryRun: true });
+    expect(c.dryRun).toBe(true);
   });
 });
 
