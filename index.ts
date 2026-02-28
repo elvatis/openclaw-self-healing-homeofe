@@ -139,11 +139,61 @@ export type PluginConfig = {
   whatsappMinRestartIntervalSec: number;
   cronFailThreshold: number;
   issueCooldownSec: number;
+  issueRepo: string;
   pluginDisableCooldownSec: number;
   probeEnabled: boolean;
   probeIntervalSec: number;
   dryRun: boolean;
 };
+
+function shellQuote(value: string): string {
+  return `'${String(value).replace(/'/g, `'"'"'`)}'`;
+}
+
+const ISSUE_REPO_SLUG_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+
+export function isValidIssueRepoSlug(value: string): boolean {
+  return ISSUE_REPO_SLUG_RE.test(value.trim());
+}
+
+export function resolveIssueRepo(configValue: unknown, envValue: unknown): string {
+  const defaultRepo = "elvatis/openclaw-self-healing-homeofe";
+  const candidates = [configValue, envValue, defaultRepo];
+  for (const candidate of candidates) {
+    if (typeof candidate !== "string") continue;
+    const trimmed = candidate.trim();
+    if (trimmed && isValidIssueRepoSlug(trimmed)) {
+      return trimmed;
+    }
+  }
+  return defaultRepo;
+}
+
+export function buildGhIssueCreateCommand(args: {
+  repo: string;
+  title: string;
+  body: string;
+  labels?: string[];
+}): string {
+  const repo = args.repo.trim();
+  if (!isValidIssueRepoSlug(repo)) {
+    throw new Error(`Invalid issue repository slug: ${args.repo}`);
+  }
+
+  const labels = (args.labels ?? []).map((label) => label.trim()).filter(Boolean);
+  const parts = [
+    "gh issue create",
+    `-R ${shellQuote(repo)}`,
+    `--title ${shellQuote(args.title)}`,
+    `--body ${shellQuote(args.body)}`,
+  ];
+
+  if (labels.length > 0) {
+    parts.push(`--label ${shellQuote(labels.join(","))}`);
+  }
+
+  return parts.join(" ");
+}
 
 const DEFAULT_MODEL_ORDER = [
   "anthropic/claude-opus-4-6",
@@ -154,6 +204,7 @@ const DEFAULT_MODEL_ORDER = [
 export function parseConfig(raw: any): PluginConfig {
   const cfg = raw ?? {};
   const autoFix = cfg.autoFix ?? {};
+  const issueRepo = resolveIssueRepo(autoFix.issueRepo, process.env.GITHUB_REPOSITORY);
   return {
     modelOrder: cfg.modelOrder?.length ? [...cfg.modelOrder] : [...DEFAULT_MODEL_ORDER],
     cooldownMinutes: cfg.cooldownMinutes ?? 300,
@@ -169,6 +220,7 @@ export function parseConfig(raw: any): PluginConfig {
     whatsappMinRestartIntervalSec: autoFix.whatsappMinRestartIntervalSec ?? 300,
     cronFailThreshold: autoFix.cronFailThreshold ?? 3,
     issueCooldownSec: autoFix.issueCooldownSec ?? 6 * 3600,
+    issueRepo,
     pluginDisableCooldownSec: autoFix.pluginDisableCooldownSec ?? 3600,
     probeEnabled: cfg.probeEnabled !== false,
     probeIntervalSec: cfg.probeIntervalSec ?? 300,
@@ -607,10 +659,17 @@ export default function register(api: any) {
                       "```",
                     ].join("\n");
 
-                    // Issue goes to this repo by default
+                    // Issue goes to configured repo (or default)
+                    const issueTitle = `Cron disabled: ${name}`;
+                    const issueCommand = buildGhIssueCreateCommand({
+                      repo: config.issueRepo,
+                      title: issueTitle,
+                      body,
+                      labels: ["security"],
+                    });
                     await runCmd(
                       api,
-                      `gh issue create -R elvatis/openclaw-self-healing-elvatis --title "Cron disabled: ${name}" --body ${JSON.stringify(body)} --label security`,
+                      issueCommand,
                       20000
                     );
                     state.cron!.lastIssueCreatedAt![id] = nowSec();

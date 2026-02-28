@@ -93,6 +93,11 @@
             "default": 21600,
             "minimum": 300
           },
+          "issueRepo": {
+            "type": "string",
+            "default": "elvatis/openclaw-self-healing-homeofe",
+            "description": "GitHub repository (owner/repo) where auto-created cron failure issues should be opened."
+          },
           "pluginDisableCooldownSec": {
             "type": "number",
             "default": 3600,

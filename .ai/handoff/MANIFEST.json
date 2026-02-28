@@ -110,7 +110,7 @@
       "notes": "## Summary\n\nExternal tools (dashboards, other plugins, CLI) cannot query the self-heal plugin state. There is no way to know which models are in cooldown, how many heals have occurred, or the current WhatsApp connection status without reading the raw state file.\n\n## Scope\n\n- Register a plugin command or API endpoint (depends on openclaw plugin API):\n  - `openclaw self-heal status` or similar\n  - Returns JSON with: cooldown models, WhatsApp status, cron heal history, last heal actions\n- Alternati",
       "github_issue": 4,
       "github_repo": "elvatis/openclaw-self-healing-homeofe",
-      "completed": "2026-02-28T17:15:00.000Z"
+      "completed": "2026-02-28T16:15:24.131Z"
     }
   },
   "quick_context": "T-010 done: StatusSnapshot type, buildStatusSnapshot() pure function, and periodic self-heal:status event emission for external monitoring. 115 tests pass, zero type errors. T-005 still blocked on openclaw plugins list --json API.",
@@ -122,11 +122,11 @@
     "manifest_plus_core": 300
   },
   "last_session": {
-    "timestamp": "2026-02-28T17:15:00.000Z",
+    "timestamp": "2026-02-28T16:15:24.131Z",
     "phase": "execution",
     "agent": "claude-code",
     "commit": "da9dbc8",
-    "duration_minutes": 3,
+    "duration_minutes": 2,
     "session_id": "t010-status-snapshot"
   },
   "next_task_id": 11

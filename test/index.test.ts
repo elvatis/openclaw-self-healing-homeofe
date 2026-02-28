@@ -15,6 +15,9 @@ import {
   parseConfig,
   configDiff,
   buildStatusSnapshot,
+  isValidIssueRepoSlug,
+  resolveIssueRepo,
+  buildGhIssueCreateCommand,
   type State,
   type PluginConfig,
   type StatusSnapshot,
@@ -1938,6 +1941,10 @@ describe("register", () => {
 // ---------------------------------------------------------------------------
 
 describe("parseConfig", () => {
+  afterEach(() => {
+    delete process.env.GITHUB_REPOSITORY;
+  });
+
   it("returns defaults for empty input", () => {
     const c = parseConfig({});
     expect(c.modelOrder).toEqual([
@@ -1954,6 +1961,7 @@ describe("parseConfig", () => {
     expect(c.whatsappMinRestartIntervalSec).toBe(300);
     expect(c.cronFailThreshold).toBe(3);
     expect(c.issueCooldownSec).toBe(6 * 3600);
+    expect(c.issueRepo).toBe("elvatis/openclaw-self-healing-homeofe");
     expect(c.pluginDisableCooldownSec).toBe(3600);
     expect(c.probeEnabled).toBe(true);
     expect(c.probeIntervalSec).toBe(300);
@@ -1983,6 +1991,22 @@ describe("parseConfig", () => {
     expect(c.cronFailThreshold).toBe(5);
   });
 
+  it("applies custom issueRepo", () => {
+    const c = parseConfig({ autoFix: { issueRepo: "owner/custom-repo" } });
+    expect(c.issueRepo).toBe("owner/custom-repo");
+  });
+
+  it("uses env issue repo when config value is missing", () => {
+    process.env.GITHUB_REPOSITORY = "owner/from-env";
+    const c = parseConfig({});
+    expect(c.issueRepo).toBe("owner/from-env");
+  });
+
+  it("falls back to default when configured issueRepo is invalid", () => {
+    const c = parseConfig({ autoFix: { issueRepo: "not-a-slug" } });
+    expect(c.issueRepo).toBe("elvatis/openclaw-self-healing-homeofe");
+  });
+
   it("does not share modelOrder array reference with input", () => {
     const input = { modelOrder: ["a", "b"] };
     const c = parseConfig(input);
@@ -2004,6 +2028,45 @@ describe("parseConfig", () => {
   it("applies dryRun config", () => {
     const c = parseConfig({ dryRun: true });
     expect(c.dryRun).toBe(true);
+  });
+});
+
+describe("GitHub issue helpers", () => {
+  it("validates owner/repo slug", () => {
+    expect(isValidIssueRepoSlug("elvatis/openclaw-self-healing-homeofe")).toBe(true);
+    expect(isValidIssueRepoSlug("owner/repo_1")).toBe(true);
+    expect(isValidIssueRepoSlug("bad")).toBe(false);
+    expect(isValidIssueRepoSlug("owner/repo/extra")).toBe(false);
+  });
+
+  it("resolves issue repo from config then env then default", () => {
+    expect(resolveIssueRepo("owner/config-repo", "owner/env-repo")).toBe("owner/config-repo");
+    expect(resolveIssueRepo("bad", "owner/env-repo")).toBe("owner/env-repo");
+    expect(resolveIssueRepo(undefined, "bad")).toBe("elvatis/openclaw-self-healing-homeofe");
+  });
+
+  it("builds shell-safe gh issue command with labels", () => {
+    const cmd = buildGhIssueCreateCommand({
+      repo: "owner/repo",
+      title: "Cron disabled: Bob's job",
+      body: "Line1\nLine2 with 'quote'",
+      labels: ["security", "triage"],
+    });
+
+    expect(cmd).toContain("gh issue create");
+    expect(cmd).toContain("-R 'owner/repo'");
+    expect(cmd).toContain("--label 'security,triage'");
+    expect(cmd).toContain("Bob'\"'\"'s job");
+  });
+
+  it("throws on invalid repo in command builder", () => {
+    expect(() =>
+      buildGhIssueCreateCommand({
+        repo: "bad-repo",
+        title: "t",
+        body: "b",
+      })
+    ).toThrow("Invalid issue repository slug");
   });
 });
 

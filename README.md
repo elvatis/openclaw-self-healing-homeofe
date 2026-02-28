@@ -56,7 +56,8 @@ openclaw gateway restart
           "autoFix": {
             "patchSessionPins": true,
             "disableFailingPlugins": false,
-            "disableFailingCrons": false
+            "disableFailingCrons": false,
+            "issueRepo": "elvatis/openclaw-self-healing-homeofe"
           }
         }
       }
@@ -64,6 +65,8 @@ openclaw gateway restart
   }
 }
 ```
+
+`autoFix.issueRepo` must use `owner/repo` format. Invalid values are ignored and the plugin falls back to `GITHUB_REPOSITORY` (if valid) or `elvatis/openclaw-self-healing-homeofe`.
 
 ## Notes
 

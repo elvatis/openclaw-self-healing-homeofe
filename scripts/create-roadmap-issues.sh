@@ -9,7 +9,7 @@
 
 set -euo pipefail
 
-REPO="elvatis/openclaw-self-healing-elvatis"
+REPO="elvatis/openclaw-self-healing-homeofe"
 DRY_RUN=false
 if [[ "${1:-}" == "--dry-run" ]]; then
   DRY_RUN=true
