@@ -783,6 +783,36 @@ describe("register", () => {
       expect(state.limited["model-a"]).toBeDefined();
     });
 
+    it("picks up probeIntervalSec changes on monitor tick", async () => {
+      const api = mockApi({
+        pluginConfig: {
+          stateFile,
+          sessionsFile,
+          configFile,
+          modelOrder: ["model-a"],
+          probeIntervalSec: 300,
+        },
+      });
+      register(api);
+
+      api.pluginConfig = {
+        stateFile,
+        sessionsFile,
+        configFile,
+        modelOrder: ["model-a"],
+        probeIntervalSec: 60,
+      };
+
+      const svc = api._services[0];
+      await svc.start();
+      await new Promise((r) => setTimeout(r, 50));
+      await svc.stop();
+
+      expect(api.logger.info).toHaveBeenCalledWith(
+        expect.stringContaining("config reloaded: changed probeIntervalSec")
+      );
+    });
+
     it("uses updated config in message_sent handler after reload", async () => {
       fs.writeFileSync(
         sessionsFile,
@@ -826,6 +856,354 @@ describe("register", () => {
       expect(state.limited["model-a"]).toBeUndefined();
     });
   });
+
+  describe("active model recovery probing", () => {
+    it("probes a model in cooldown and removes it on success", async () => {
+      // Seed state with a model in cooldown, lastHitAt far enough in the past
+      const hitAt = nowSec() - 400; // 400s ago, probe interval default 300s
+      saveState(stateFile, {
+        ...emptyState(),
+        limited: {
+          "model-a": { lastHitAt: hitAt, nextAvailableAt: nowSec() + 9999 },
+        },
+      });
+
+      const api = mockApi({
+        pluginConfig: {
+          stateFile,
+          sessionsFile,
+          configFile,
+          modelOrder: ["model-a", "model-b"],
+          probeEnabled: true,
+          probeIntervalSec: 300,
+        },
+      });
+      // Probe succeeds
+      api.runtime.system.runCommandWithTimeout.mockResolvedValue({
+        exitCode: 0,
+        stdout: "ok",
+        stderr: "",
+      });
+      register(api);
+
+      const svc = api._services[0];
+      await svc.start();
+      await new Promise((r) => setTimeout(r, 50));
+      await svc.stop();
+
+      const state = loadState(stateFile);
+      expect(state.limited["model-a"]).toBeUndefined();
+      expect(api.logger.info).toHaveBeenCalledWith(
+        expect.stringContaining("model model-a recovered early via probe")
+      );
+    });
+
+    it("keeps model in cooldown when probe fails", async () => {
+      const hitAt = nowSec() - 400;
+      saveState(stateFile, {
+        ...emptyState(),
+        limited: {
+          "model-a": { lastHitAt: hitAt, nextAvailableAt: nowSec() + 9999 },
+        },
+      });
+
+      const api = mockApi({
+        pluginConfig: {
+          stateFile,
+          sessionsFile,
+          configFile,
+          modelOrder: ["model-a", "model-b"],
+          probeEnabled: true,
+          probeIntervalSec: 300,
+        },
+      });
+      // Probe fails (default mock returns exitCode 1)
+      register(api);
+
+      const svc = api._services[0];
+      await svc.start();
+      await new Promise((r) => setTimeout(r, 50));
+      await svc.stop();
+
+      const state = loadState(stateFile);
+      expect(state.limited["model-a"]).toBeDefined();
+      expect(state.limited["model-a"].lastProbeAt).toBeGreaterThan(0);
+    });
+
+    it("does not probe when probeEnabled is false", async () => {
+      const hitAt = nowSec() - 400;
+      saveState(stateFile, {
+        ...emptyState(),
+        limited: {
+          "model-a": { lastHitAt: hitAt, nextAvailableAt: nowSec() + 9999 },
+        },
+      });
+
+      const api = mockApi({
+        pluginConfig: {
+          stateFile,
+          sessionsFile,
+          configFile,
+          modelOrder: ["model-a", "model-b"],
+          probeEnabled: false,
+          probeIntervalSec: 300,
+        },
+      });
+      api.runtime.system.runCommandWithTimeout.mockResolvedValue({
+        exitCode: 0,
+        stdout: "ok",
+        stderr: "",
+      });
+      register(api);
+
+      const svc = api._services[0];
+      await svc.start();
+      await new Promise((r) => setTimeout(r, 50));
+      await svc.stop();
+
+      const state = loadState(stateFile);
+      // Model should still be in cooldown since probing was disabled
+      expect(state.limited["model-a"]).toBeDefined();
+    });
+
+    it("respects probe interval and does not probe too soon", async () => {
+      const hitAt = nowSec() - 10; // Only 10s ago, far less than 300s interval
+      saveState(stateFile, {
+        ...emptyState(),
+        limited: {
+          "model-a": { lastHitAt: hitAt, nextAvailableAt: nowSec() + 9999 },
+        },
+      });
+
+      const api = mockApi({
+        pluginConfig: {
+          stateFile,
+          sessionsFile,
+          configFile,
+          modelOrder: ["model-a", "model-b"],
+          probeEnabled: true,
+          probeIntervalSec: 300,
+        },
+      });
+      api.runtime.system.runCommandWithTimeout.mockResolvedValue({
+        exitCode: 0,
+        stdout: "ok",
+        stderr: "",
+      });
+      register(api);
+
+      const svc = api._services[0];
+      await svc.start();
+      await new Promise((r) => setTimeout(r, 50));
+      await svc.stop();
+
+      const state = loadState(stateFile);
+      // Should NOT have been probed (too soon), model stays in cooldown
+      expect(state.limited["model-a"]).toBeDefined();
+      expect(state.limited["model-a"].lastProbeAt).toBeUndefined();
+    });
+
+    it("respects lastProbeAt when deciding whether to probe again", async () => {
+      // Last probe was only 60s ago, interval is 300s
+      const lastProbeAt = nowSec() - 60;
+      saveState(stateFile, {
+        ...emptyState(),
+        limited: {
+          "model-a": {
+            lastHitAt: nowSec() - 1000,
+            nextAvailableAt: nowSec() + 9999,
+            lastProbeAt,
+          },
+        },
+      });
+
+      const api = mockApi({
+        pluginConfig: {
+          stateFile,
+          sessionsFile,
+          configFile,
+          modelOrder: ["model-a", "model-b"],
+          probeEnabled: true,
+          probeIntervalSec: 300,
+        },
+      });
+      api.runtime.system.runCommandWithTimeout.mockResolvedValue({
+        exitCode: 0,
+        stdout: "ok",
+        stderr: "",
+      });
+      register(api);
+
+      const svc = api._services[0];
+      await svc.start();
+      await new Promise((r) => setTimeout(r, 50));
+      await svc.stop();
+
+      const state = loadState(stateFile);
+      // Should not have probed again, lastProbeAt should be unchanged
+      expect(state.limited["model-a"]).toBeDefined();
+      expect(state.limited["model-a"].lastProbeAt).toBe(lastProbeAt);
+    });
+
+    it("skips models whose cooldown has already expired", async () => {
+      const hitAt = nowSec() - 400;
+      saveState(stateFile, {
+        ...emptyState(),
+        limited: {
+          "model-a": { lastHitAt: hitAt, nextAvailableAt: nowSec() - 1 }, // already expired
+        },
+      });
+
+      const api = mockApi({
+        pluginConfig: {
+          stateFile,
+          sessionsFile,
+          configFile,
+          modelOrder: ["model-a", "model-b"],
+          probeEnabled: true,
+          probeIntervalSec: 300,
+        },
+      });
+      register(api);
+
+      const svc = api._services[0];
+      await svc.start();
+      await new Promise((r) => setTimeout(r, 50));
+      await svc.stop();
+
+      // runCommandWithTimeout should only be called for the gateway status check,
+      // not for a probe (since the model's cooldown already expired)
+      const probeCalls = api.runtime.system.runCommandWithTimeout.mock.calls.filter(
+        (c: any[]) => {
+          const cmd = c[0]?.command?.join(" ") ?? "";
+          return cmd.includes("model probe");
+        }
+      );
+      expect(probeCalls).toHaveLength(0);
+    });
+
+    it("logs preferred model recovery when primary model recovers", async () => {
+      const hitAt = nowSec() - 400;
+      saveState(stateFile, {
+        ...emptyState(),
+        limited: {
+          "model-a": { lastHitAt: hitAt, nextAvailableAt: nowSec() + 9999 },
+        },
+      });
+
+      const api = mockApi({
+        pluginConfig: {
+          stateFile,
+          sessionsFile,
+          configFile,
+          modelOrder: ["model-a", "model-b"],
+          probeEnabled: true,
+          probeIntervalSec: 300,
+        },
+      });
+      api.runtime.system.runCommandWithTimeout.mockResolvedValue({
+        exitCode: 0,
+        stdout: "ok",
+        stderr: "",
+      });
+      register(api);
+
+      const svc = api._services[0];
+      await svc.start();
+      await new Promise((r) => setTimeout(r, 50));
+      await svc.stop();
+
+      expect(api.logger.info).toHaveBeenCalledWith(
+        expect.stringContaining("preferred model model-a recovered")
+      );
+    });
+
+    it("does not log preferred model recovery for non-primary models", async () => {
+      const hitAt = nowSec() - 400;
+      saveState(stateFile, {
+        ...emptyState(),
+        limited: {
+          "model-b": { lastHitAt: hitAt, nextAvailableAt: nowSec() + 9999 },
+        },
+      });
+
+      const api = mockApi({
+        pluginConfig: {
+          stateFile,
+          sessionsFile,
+          configFile,
+          modelOrder: ["model-a", "model-b"],
+          probeEnabled: true,
+          probeIntervalSec: 300,
+        },
+      });
+      api.runtime.system.runCommandWithTimeout.mockResolvedValue({
+        exitCode: 0,
+        stdout: "ok",
+        stderr: "",
+      });
+      register(api);
+
+      const svc = api._services[0];
+      await svc.start();
+      await new Promise((r) => setTimeout(r, 50));
+      await svc.stop();
+
+      const state = loadState(stateFile);
+      expect(state.limited["model-b"]).toBeUndefined();
+
+      const preferredCalls = api.logger.info.mock.calls.filter(
+        (c: any[]) => typeof c[0] === "string" && c[0].includes("preferred model")
+      );
+      expect(preferredCalls).toHaveLength(0);
+    });
+
+    it("probes multiple models in cooldown independently", async () => {
+      const hitAt = nowSec() - 400;
+      saveState(stateFile, {
+        ...emptyState(),
+        limited: {
+          "model-a": { lastHitAt: hitAt, nextAvailableAt: nowSec() + 9999 },
+          "model-b": { lastHitAt: hitAt, nextAvailableAt: nowSec() + 9999 },
+        },
+      });
+
+      const api = mockApi({
+        pluginConfig: {
+          stateFile,
+          sessionsFile,
+          configFile,
+          modelOrder: ["model-a", "model-b", "model-c"],
+          probeEnabled: true,
+          probeIntervalSec: 300,
+        },
+      });
+      // model-a probe succeeds, model-b probe fails
+      let probeCount = 0;
+      api.runtime.system.runCommandWithTimeout.mockImplementation(async (opts: any) => {
+        const cmd = opts?.command?.join(" ") ?? "";
+        if (cmd.includes("model probe")) {
+          probeCount++;
+          if (cmd.includes("model-a")) {
+            return { exitCode: 0, stdout: "ok", stderr: "" };
+          }
+          return { exitCode: 1, stdout: "", stderr: "still limited" };
+        }
+        return { exitCode: 1, stdout: "", stderr: "not available" };
+      });
+      register(api);
+
+      const svc = api._services[0];
+      await svc.start();
+      await new Promise((r) => setTimeout(r, 50));
+      await svc.stop();
+
+      const state = loadState(stateFile);
+      expect(state.limited["model-a"]).toBeUndefined(); // recovered
+      expect(state.limited["model-b"]).toBeDefined(); // still in cooldown
+      expect(probeCount).toBe(2);
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -850,6 +1228,8 @@ describe("parseConfig", () => {
     expect(c.cronFailThreshold).toBe(3);
     expect(c.issueCooldownSec).toBe(6 * 3600);
     expect(c.pluginDisableCooldownSec).toBe(3600);
+    expect(c.probeEnabled).toBe(true);
+    expect(c.probeIntervalSec).toBe(300);
   });
 
   it("returns defaults for undefined input", () => {
@@ -885,6 +1265,12 @@ describe("parseConfig", () => {
   it("expands tilde paths", () => {
     const c = parseConfig({ stateFile: "~/my-state.json" });
     expect(c.stateFile).toBe(path.join(os.homedir(), "my-state.json"));
+  });
+
+  it("applies custom probe config", () => {
+    const c = parseConfig({ probeEnabled: false, probeIntervalSec: 120 });
+    expect(c.probeEnabled).toBe(false);
+    expect(c.probeIntervalSec).toBe(120);
   });
 });
 

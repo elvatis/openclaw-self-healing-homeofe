@@ -10,7 +10,7 @@ export function expandHome(p: string): string {
 }
 
 export type State = {
-  limited: Record<string, { lastHitAt: number; nextAvailableAt: number; reason?: string }>;
+  limited: Record<string, { lastHitAt: number; nextAvailableAt: number; reason?: string; lastProbeAt?: number }>;
   pendingBackups?: Record<string, { createdAt: number; reason: string }>; // filePath -> meta
   whatsapp?: {
     lastSeenConnectedAt?: number;
@@ -42,6 +42,8 @@ export type PluginConfig = {
   cronFailThreshold: number;
   issueCooldownSec: number;
   pluginDisableCooldownSec: number;
+  probeEnabled: boolean;
+  probeIntervalSec: number;
 };
 
 const DEFAULT_MODEL_ORDER = [
@@ -69,6 +71,8 @@ export function parseConfig(raw: any): PluginConfig {
     cronFailThreshold: autoFix.cronFailThreshold ?? 3,
     issueCooldownSec: autoFix.issueCooldownSec ?? 6 * 3600,
     pluginDisableCooldownSec: autoFix.pluginDisableCooldownSec ?? 3600,
+    probeEnabled: cfg.probeEnabled !== false,
+    probeIntervalSec: cfg.probeIntervalSec ?? 300,
   };
 }
 
@@ -462,6 +466,37 @@ export default function register(api: any) {
             }
           }
           // TODO: when openclaw provides plugins list --json, parse and disable any status=error.
+        }
+
+        // --- Active model recovery probing ---
+        if (config.probeEnabled) {
+          const t = nowSec();
+          for (const model of Object.keys(state.limited)) {
+            const info = state.limited[model];
+            // Only probe models still in cooldown
+            if (info.nextAvailableAt <= t) continue;
+
+            // Respect probe interval
+            const lastProbe = info.lastProbeAt ?? info.lastHitAt;
+            if (t - lastProbe < config.probeIntervalSec) continue;
+
+            // Probe the model
+            const res = await runCmd(api, `openclaw model probe "${model}"`, 15000);
+            state.limited[model].lastProbeAt = t;
+
+            if (res.ok) {
+              api.logger?.info?.(
+                `[self-heal] model ${model} recovered early via probe, removing from cooldown`
+              );
+              delete state.limited[model];
+
+              if (model === config.modelOrder[0]) {
+                api.logger?.info?.(
+                  `[self-heal] preferred model ${model} recovered, will be used for new requests`
+                );
+              }
+            }
+          }
         }
 
         saveState(config.stateFile, state);
