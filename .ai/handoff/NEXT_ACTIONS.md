@@ -4,29 +4,13 @@
 
 | Status  | Count |
 |---------|-------|
-| Done    | 11    |
-| Ready   | 3     |
+| Done    | 12    |
+| Ready   | 2     |
 | Blocked | 1     |
 
 ---
 
 ## Ready - Work These Next
-
-### T-012 [high] - Add startup configuration validation with fail-fast behavior
-- **Goal:** Validate config on startup and refuse to start if invalid, logging clear errors.
-- **Context:** Currently parseConfig() silently falls back to defaults for any invalid value. The plugin starts even if modelOrder is empty, paths are not writable, or cooldownMinutes is set to an absurd value.
-- **What to do:**
-  - Export `validateConfig(config): { valid, errors }` function
-  - Validate: modelOrder has at least one entry
-  - Validate: cooldownMinutes is between 1 and 10080 (1 week)
-  - Validate: probeIntervalSec >= 60
-  - Validate: whatsappMinRestartIntervalSec >= 60
-  - Validate: state file directory is writable (best-effort)
-  - Log each validation error with api.logger?.error
-  - Return early from register() if validation fails (fail-fast)
-- **Files:** `index.ts`, `test/index.test.ts`, `README.md`
-- **Definition of done:** validateConfig exported and tested; plugin refuses to start on bad config; README updated.
-- **GitHub Issue:** #10
 
 ### T-013 [medium] - Write status snapshot file on each monitor tick
 - **Goal:** Write `buildStatusSnapshot()` output to a JSON file on every tick for external polling.
@@ -76,8 +60,8 @@
 
 | Task  | Title | Date |
 |-------|-------|------|
+| T-012 | Add startup configuration validation with fail-fast behavior | 2026-03-02 |
 | T-011 | Add integration tests for monitor service tick flows | 2026-03-02 |
 | T-004 | Add TypeScript build pipeline and type-checking | 2026-03-01 |
 | T-010 | Expose self-heal status for external monitoring | 2026-02-28 |
 | T-009 | Emit structured observability events for heal actions | 2026-02-28 |
-| T-008 | Add dry-run mode for safe validation of healing logic | 2026-02-28 |
