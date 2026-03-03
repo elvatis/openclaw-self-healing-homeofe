@@ -757,7 +757,7 @@ export default function register(api: any) {
         if (config.disableFailingPlugins) {
           const res = await runCmd(api, "openclaw plugins list --json", 15000);
           if (res.ok) {
-            type PluginEntry = { id: string; name?: string; enabled?: boolean; status?: string; version?: string };
+            type PluginEntry = { id: string; name?: string; enabled?: boolean; status?: string; version?: string; error?: string };
             const parsed = safeJsonParse<{ plugins: PluginEntry[] }>(res.stdout);
             const plugins: PluginEntry[] = parsed?.plugins ?? [];
             const selfId = "openclaw-self-healing-elvatis";
@@ -776,7 +776,7 @@ export default function register(api: any) {
               }
 
               const name = plugin.name ?? id;
-              const failReason = `status=${plugin.status}`;
+              const failReason = plugin.error ? `status=${plugin.status} error=${plugin.error}` : `status=${plugin.status}`;
 
               if (config.dryRun) {
                 api.logger?.info?.(`[self-heal] [dry-run] would disable plugin ${name} (${id}), reason=${failReason}`);
@@ -800,6 +800,7 @@ export default function register(api: any) {
                   `Plugin Name: ${name}`,
                   `Version: ${plugin.version ?? "unknown"}`,
                   `Status: ${plugin.status}`,
+                  ...(plugin.error ? [`Error: ${plugin.error}`] : []),
                 ].join("\n");
                 const issueCommand = buildGhIssueCreateCommand({
                   repo: config.issueRepo,
