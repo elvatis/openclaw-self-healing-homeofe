@@ -755,17 +755,69 @@ export default function register(api: any) {
 
         // --- Plugin error rollback (disable plugin) ---
         if (config.disableFailingPlugins) {
-          const res = await runCmd(api, "openclaw plugins list", 15000);
+          const res = await runCmd(api, "openclaw plugins list --json", 15000);
           if (res.ok) {
-            // Heuristic: look for lines containing 'error' or 'crash'
-            const lines = res.stdout.split("\n");
-            for (const ln of lines) {
-              if (!ln.toLowerCase().includes("error")) continue;
-              // No robust parsing available in plain output. Use a conservative approach:
-              // if we see our own plugin listed with error, do not disable others.
+            type PluginEntry = { id: string; name?: string; enabled?: boolean; status?: string; version?: string };
+            const parsed = safeJsonParse<{ plugins: PluginEntry[] }>(res.stdout);
+            const plugins: PluginEntry[] = parsed?.plugins ?? [];
+            const selfId = "openclaw-self-healing-elvatis";
+
+            for (const plugin of plugins) {
+              const id = plugin.id;
+              if (!id || id === selfId) continue; // never disable ourselves
+
+              const isFailing = plugin.status === "error" || plugin.status === "crash";
+              if (!isFailing) continue;
+
+              const lastDisableAt = state.plugins!.lastDisableAt![id] ?? 0;
+              if (nowSec() - lastDisableAt < config.pluginDisableCooldownSec) {
+                api.logger?.info?.(`[self-heal] plugin ${id} still in disable cooldown, skipping`);
+                continue;
+              }
+
+              const name = plugin.name ?? id;
+              const failReason = `status=${plugin.status}`;
+
+              if (config.dryRun) {
+                api.logger?.info?.(`[self-heal] [dry-run] would disable plugin ${name} (${id}), reason=${failReason}`);
+                state.plugins!.lastDisableAt![id] = nowSec();
+              } else {
+                const v = isConfigValid();
+                if (!v.ok) {
+                  api.logger?.error?.(`[self-heal] NOT disabling plugin: openclaw.json invalid: ${v.error}`);
+                  continue;
+                }
+                api.logger?.warn?.(`[self-heal] Disabling failing plugin ${name} (${id}), reason=${failReason}`);
+                backupConfig("pre-plugin-disable");
+                await runCmd(api, `openclaw plugins disable ${shellQuote(id)}`, 15000);
+                await cleanupPendingBackups("post-plugin-disable");
+                state.plugins!.lastDisableAt![id] = nowSec();
+
+                const body = [
+                  `Plugin was detected as failing and disabled by openclaw-self-healing.`,
+                  ``,
+                  `Plugin ID: ${id}`,
+                  `Plugin Name: ${name}`,
+                  `Version: ${plugin.version ?? "unknown"}`,
+                  `Status: ${plugin.status}`,
+                ].join("\n");
+                const issueCommand = buildGhIssueCreateCommand({
+                  repo: config.issueRepo,
+                  title: `Plugin disabled: ${name}`,
+                  body,
+                  labels: ["security"],
+                });
+                await runCmd(api, issueCommand, 20000);
+              }
+
+              api.emit?.("self-heal:plugin-disabled", {
+                pluginId: id,
+                pluginName: name,
+                reason: failReason,
+                dryRun: config.dryRun,
+              });
             }
           }
-          // TODO: when openclaw provides plugins list --json, parse and disable any status=error.
         }
 
         // --- Active model recovery probing ---
