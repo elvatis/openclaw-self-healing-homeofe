@@ -1,45 +1,11 @@
 {
-  "name": "@elvatis_com/openclaw-inwx",
-  "version": "0.2.0",
-  "description": "OpenClaw plugin for INWX domain registrar - domain registration, DNS management, nameservers, DNSSEC, pricing",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
-  "scripts": {
-    "build": "tsc",
-    "test": "vitest run",
-    "prepublishOnly": "npm run build",
-    "test:watch": "vitest",
-    "test:ote": "vitest run --config vitest.ote.config.ts"
-  },
-  "files": [
-    "dist",
-    "openclaw.plugin.json",
-    "README.md"
-  ],
-  "keywords": [
-    "openclaw",
-    "inwx",
-    "domain",
-    "dns",
-    "registrar",
-    "dnssec",
-    "nameserver"
-  ],
-  "author": "Elvatis <info@example.invalid>",
-  "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/elvatis/openclaw-inwx.git"
-  },
-  "dependencies": {
-    "domrobot-client": "^3.3.0"
-  },
+  "name": "openclaw-automation-tests",
+  "version": "0.1.0",
+  "private": true,
   "devDependencies": {
-    "@types/node": "^22.0.0",
-    "typescript": "^5.7.0",
-    "vitest": "^3.0.0"
+    "vitest": "^1.0.0"
   },
-  "overrides": {
-    "test-exclude": "^7.0.1"
+  "scripts": {
+    "test": "vitest run"
   }
 }
